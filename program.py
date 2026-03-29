@@ -20,7 +20,6 @@ def get_int(prompt, min_value=None, max_value=None):
         except ValueError:
             print("Invalid integer value. Try again.")
 
-
 def get_float(prompt, allow_zero=True):
     while True:
         try:
@@ -68,7 +67,7 @@ class Matrix:
 
         for i in range(height):
             for j in range(width):
-                self.numbers[i, j] = get_float(f"Input number for position [{j}][{i}]: ")
+                self.numbers[i, j] = get_float(f"Input number for position [{i}][{j}]: ")
 
     @classmethod
     def from_file(cls, file=None):
@@ -79,9 +78,8 @@ class Matrix:
         try:
             numbers = np.loadtxt(file, dtype=float)
 
-            if numbers.ndim != 2:
-                print("Matrix is not properly structured")
-                exit(1)
+            if numbers.ndim == 1:
+                numbers = numbers.reshape(1, -1)
 
             height, width = numbers.shape
 
@@ -93,8 +91,7 @@ class Matrix:
             return obj
 
         except FileNotFoundError:
-            print("File is not found")
-            exit(1)
+            raise FileNotFoundError("File is not found")
 
     def save_to_file(self, file):
         np.savetxt(file, self.numbers, fmt='%.6f')
@@ -126,16 +123,13 @@ class Matrix:
         except np.linalg.LinAlgError:
             return False
 
-    def is_convergent(self):
+    def convergence_info(self):
         if self.is_diagonally_dominant():
-            print("Matrix is diagonally dominant and convergent!")
-            return True
+            return "diagonal_dominance"
         elif self.is_symmetric() and self.is_positive_definite():
-            print("Matrix is symmetric and positive definite, convergent!")
-            return True
+            return "spd"
         else:
-            print("Matrix is not convergent!")
-            return False
+            return "unknown"
 
     def is_consistent(self, b_vector):
         a = self.numbers
@@ -150,20 +144,43 @@ class Matrix:
             print("Matrix is not consistent — no solutions")
             return False
         elif rank_a < n:
-            print("Matrix is indefinite — infinite number of solutions")
+            print("Infinite number of solutions")
             return False
         else:
             print("Matrix is consistent — one solution")
             return True
+
+    def fix_diagonal(self, b):
+        n = self.height
+        b = np.array(b, dtype=float)
+        swapped = False
+
+        for i in range(n):
+            swapped = False
+            if abs(self.numbers[i, i]) < 1e-12:
+                for j in range(i + 1, n):
+                    if abs(self.numbers[j, i]) > 1e-12:
+                        self.numbers[[i, j]] = self.numbers[[j, i]]
+                        b[[i, j]] = b[[j, i]]
+                        print(f"Swapped rows {i} and {j}")
+                        swapped = True
+                        break
+
+                if not swapped:
+                    raise ValueError(f"Cannot fix zero diagonal at row {i}")
+        if swapped:
+            print("-------------------Matrix after diagonal correction--------------------\n")
+            self.print_matrix()
+            print("-----------------------------------------------------------------------\n")
+        return b
 
     def gauss_seidel_step(self, x, b_vector):
         n = self.height
         x_new = x.copy()
 
         for i in range(n):
-            if self.numbers[i, i] == 0:
-                print(f"Zero on diagonal at row {i} — cannot divide")
-                exit(1)
+            if abs(self.numbers[i, i]) < 1e-12:
+                raise ValueError(f"Near-zero diagonal element at row {i}")
 
             sum1 = np.dot(self.numbers[i, :i], x_new[:i])
             sum2 = np.dot(self.numbers[i, i + 1:], x[i + 1:])
@@ -171,18 +188,20 @@ class Matrix:
 
         return x_new
 
-    def gauss_seidel(self, b_vector, itr=None, eps=None):
+    def gauss_seidel(self, b_vector, itr=None, eps=None, max_iter=1000):
         if self.width != self.height:
-            print("Matrix must be square!")
-            exit(1)
+            raise ValueError("Matrix must be square!")
+
+        if len(b_vector) != self.height:
+            raise ValueError("Vector b size must match matrix height")
+
         x = np.zeros(self.height)
         b_vector = np.array(b_vector, dtype=float)
 
         if eps is not None:
             print("\n--- Gauss-Seidel (epsilon mode) ---")
-            iteration = 1
 
-            while True:
+            for iteration in range(1, max_iter + 1):
                 x_new = self.gauss_seidel_step(x, b_vector)
 
                 print(f"Iteration {iteration}: x = {x_new}")
@@ -192,29 +211,29 @@ class Matrix:
                     return x_new
 
                 x = x_new
-                iteration += 1
+
+            print("\nWarning: Maximum iterations reached — no convergence.")
+            return x
 
         if itr is not None:
             print("\n--- Gauss-Seidel (iteration limit mode) ---")
 
             for iteration in range(1, itr + 1):
-                x_new = self.gauss_seidel_step(x, b_vector)
+                x = self.gauss_seidel_step(x, b_vector)
+                print(f"Iteration {iteration}: x = {x}")
 
-                print(f"Iteration {iteration}: x = {x_new}")
-
-                x = x_new
-
-            print(f"\nFinished after {itr} iterations.")
             return x
 
 def start():
     opt = get_choice("1. Input manually matrix value\n2. Load matrix from file\nChoose option: ",{"1", "2"})
 
     if opt == "1":
-        width = get_int("Input width of matrix : ", min_value=1)
-        height = get_int("Input height of matrix : ", min_value=1)
-        m = Matrix(width, height)
-
+        n = get_int("Input size of matrix (n x n): ", min_value=1)
+        m = Matrix(n,n)
+        saving = get_choice("\nDo you want to safe matrix in file? y/n : ", ["y","n"])
+        if saving == "y":
+            file = get_txt_file()
+            m.save_to_file(file)
     else:
         file = get_txt_file()
         m = Matrix.from_file(file)
@@ -223,14 +242,25 @@ def start():
 
     m.print_matrix()
 
-    if not m.is_convergent():
-        exit(1)
-
     print("------------------------ b vector construction ------------------------")
 
     b = get_vector(m.height)
 
-    if not m.is_consistent(b):
+    b = m.fix_diagonal(b)
+
+    conv = m.convergence_info()
+
+    if conv == "diagonal_dominance":
+        print("Matrix is diagonally dominant — convergence guaranteed.")
+    elif conv == "spd":
+        print("Matrix is symmetric positive definite — convergence guaranteed.")
+    else:
+        print("Warning: No guarantee of convergence.")
+        cont = get_choice("Continue anyway? (y/n): ", {"y", "n"})
+        if cont == "n":
+            exit(1)
+
+    if m.is_consistent(b) is False:
         exit(1)
 
     print("---------------------- Calculation end condition ----------------------")
@@ -238,6 +268,9 @@ def start():
 
     if condition == "1":
         eps = get_float("\nInput Epsilon value : ")
+        if eps <= 0:
+            print("Epsilon must be positive.")
+            exit(1)
         result = m.gauss_seidel(b, eps = eps)
     else:
         itr = get_int("\nInput iteration limit : ")
